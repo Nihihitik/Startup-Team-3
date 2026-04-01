@@ -88,30 +88,103 @@
 
 ## Шаг 5. Модель данных / сущностей MVP
 
-**1. Session (Игровая сессия)**
-- Поля: `id (UUID)`, `code (VARCHAR 6)`, `player_count (INT 5–16)`, `status (waiting / active / finished)`, `host_character (zловещий / весёлый)`, `created_at`, `ended_at`
-- Связи: содержит многих Players, проходит через GamePhases, логирует GameEvents
+### 1. Session (Игровая сессия)
 
-**2. Player (Игрок)**
-- Поля: `id (UUID)`, `session_id (FK)`, `name (VARCHAR)`, `role_id (FK)`, `status (alive / dead)`, `device_id (VARCHAR)`, `join_order (INT)`
-- Связи: принадлежит Session, имеет Role, совершает NightActions, участвует в DayVotes
+| Поле | Тип | Описание |
+|------|-----|----------|
+| id | UUID | Первичный ключ |
+| code | VARCHAR(6) | Уникальный код подключения (напр. `AX7K2M`) |
+| player_count | INT (5–16) | Количество игроков, заданное организатором |
+| status | ENUM | `waiting` → `active` → `finished` |
+| host_character | VARCHAR | Характер ведущего: `зловещий`, `весёлый` |
+| created_at | TIMESTAMP | Время создания сессии |
+| ended_at | TIMESTAMP | Время завершения (NULL до конца игры) |
 
-**3. Role (Роль — справочник)**
-- Поля: `id (UUID)`, `name (Мафия / Шериф / Доктор / Мирный)`, `team (mafia / city)`, `abilities (JSON)`, `night_action_type (kill / check / heal / null)`
-- Связи: назначается многим Players
+**Связи:** содержит многих Players → проходит через GamePhases → логирует GameEvents
 
-**4. GamePhase (Игровая фаза)**
-- Поля: `id (UUID)`, `session_id (FK)`, `phase_type (night / day)`, `phase_number (INT)`, `started_at`, `ended_at`
-- Связи: принадлежит Session, содержит NightActions и DayVotes
+---
 
-**5. GameEvent (Игровое событие — лог)**
-- Поля: `id (UUID)`, `session_id (FK)`, `phase_id (FK, nullable)`, `event_type (player_joined / game_started / player_died / vote_result / game_finished / …)`, `payload (JSON)`, `created_at`
-- Связи: привязан к Session и Phase; используется для восстановления состояния при реконнекте
+### 2. Player (Игрок)
 
-**6. User / Subscription (Пользователь и подписка)**
-- `User`: `id`, `device_id (UK)`, `email (nullable)`, `created_at`
-- `Subscription`: `id`, `user_id (FK)`, `plan (free / pro)`, `period_start`, `period_end`, `status`
-- Связи: User имеет Subscriptions; подписка определяет, доступен ли Pro-режим (до 12 игроков, доп. характеры)
+| Поле | Тип | Описание |
+|------|-----|----------|
+| id | UUID | Первичный ключ |
+| session_id | UUID (FK) | Ссылка на Session |
+| name | VARCHAR(32) | Имя игрока (отображается в объявлениях) |
+| role_id | UUID (FK) | Ссылка на Role; NULL до старта, заполняется при /startgame |
+| status | ENUM | `alive` / `dead` |
+| device_id | VARCHAR | ID устройства для реконнекта |
+| join_order | INT | Порядок подключения (для разрешения ничьих) |
+
+**Связи:** принадлежит Session → имеет Role → совершает NightActions → участвует в DayVotes
+
+---
+
+### 3. Role (Роль — справочник)
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| id | UUID | Первичный ключ |
+| name | VARCHAR | `Мафия`, `Шериф`, `Доктор`, `Мирный` |
+| team | ENUM | `mafia` / `city` (используется для расчёта победителя) |
+| abilities | JSON | Описание способностей роли |
+| night_action_type | VARCHAR | `kill` / `check` / `heal` / `null` (у Мирного) |
+
+**Связи:** назначается многим Players (справочник, не зависит от конкретной игры)
+
+---
+
+### 4. GamePhase (Игровая фаза)
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| id | UUID | Первичный ключ |
+| session_id | UUID (FK) | Ссылка на Session |
+| phase_type | ENUM | `night` / `day` |
+| phase_number | INT | Порядковый номер (Ночь 1, День 1, Ночь 2…) |
+| started_at | TIMESTAMP | Начало фазы |
+| ended_at | TIMESTAMP | Конец фазы (NULL пока фаза активна) |
+
+**Связи:** принадлежит Session → содержит NightActions и DayVotes → логирует GameEvents
+
+---
+
+### 5. GameEvent (Игровое событие — лог)
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| id | UUID | Первичный ключ |
+| session_id | UUID (FK) | Ссылка на Session |
+| phase_id | UUID (FK, nullable) | Ссылка на Phase; NULL для событий уровня сессии |
+| event_type | VARCHAR | `player_joined`, `game_started`, `phase_started`, `player_died`, `vote_result`, `game_finished` |
+| payload | JSON | Детали события: `{"player_id": "...", "cause": "vote"}` |
+| created_at | TIMESTAMP | Время события (NOT NULL) |
+
+**Связи:** используется для восстановления состояния при реконнекте по event log
+
+---
+
+### 6a. User (Пользователь)
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| id | UUID | Первичный ключ |
+| device_id | VARCHAR (UK) | ID устройства — основной идентификатор |
+| email | VARCHAR (nullable) | Для восстановления подписки при смене телефона |
+| created_at | TIMESTAMP | Дата регистрации |
+
+### 6b. Subscription (Подписка)
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| id | UUID | Первичный ключ |
+| user_id | UUID (FK) | Ссылка на User |
+| plan | ENUM | `free` (до 5 игроков) / `pro` (до 12 игроков) |
+| period_start | TIMESTAMP | Начало оплаченного периода |
+| period_end | TIMESTAMP | Конец периода (Pro-доступ активен до этой даты) |
+| status | ENUM | `active` / `cancelled` / `expired` |
+
+**Связи:** User имеет Subscriptions → подписка определяет лимит игроков и доступность доп. характеров
 
 ---
 
